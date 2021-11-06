@@ -1,0 +1,19 @@
+[package]
+name = "coachman"
+version = "0.1.0"
+edition = "2021"
+license = "Unlicense"
+description = "rust asynchronous task manager built on top of tokio framework"
+readme = "README.rst"
+
+homepage = "https://github.com/dapper91/coachman-rs"
+documentation = "https://docs.rs/coachman/"
+repository = "https://github.com/dapper91/coachman-rs"
+
+categories = ["asynchronous"]
+keywords = ["tokio", "async", "task-manager", "cancellation", "supervisor"]
+
+[dependencies]
+log = "^0.4"
+slab = "^0.4"
+tokio = {"version" = "^1.13", features = ["rt", "sync", "macros", "time"]}
