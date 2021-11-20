@@ -5,57 +5,60 @@
 //! * **Task count control:**
 //!   `coachman` allows you to control task count preventing your application from uncontrolled task count explosion.
 //! * **Task cancellation:**
-//!   The main feature of `coachman` is task cancellation. It provides a simple api for making your task cancellable.
+//!   The main feature of `coachman` is task cancellation. It provides a simple api for making your task cancelable.
 //!
 //! # Basic example
 //!
-//! The main feature of coachman is making asynchronous tasks cancellable.
+//! The main feature of coachman is making asynchronous tasks cancelable.
 //! Look at the following example:
 //!
 //! ```
 //! use coachman as cm;
-//! use coachman::try_await;
-//! use coachman::AwaitResult::{Cancelled, Completed};
-//! use std::time;
+//! use coachman::{try_await, Canceled, Completed, TaskError};
 //!
-//! async fn function(i: usize) {
-//!     match try_await!(tokio::time::sleep(time::Duration::from_secs(i as u64))) {
-//!         Cancelled => println!("task#{} cancelled", i),
-//!         Completed(_) => println!("task#{} completed", i),
-//!     };
+//! async fn inner_func(i: usize, duration: u64) {
+//!     match try_await!(tokio::time::sleep(std::time::Duration::from_secs(duration))) {
+//!         Canceled => println!("task#{} inner canceled", i),
+//!         Completed(_) => println!("task#{} inner completed", i),
+//!     }
+//! }
 //!
-//!     println!("task#{} canceled: {}", i, cm::is_task_canceled());
+//! async fn outer_func(i: usize, duration: u64) {
+//!     match try_await!(inner_func(i, duration)) {
+//!         Canceled => println!("task#{} outer canceled", i),
+//!         Completed(_) => println!("task#{} outer completed", i),
+//!     }
 //! }
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     let mut task_manager = cm::TaskManager::builder().with_max_tasks(10).with_capacity(10).build();
-//!
-//!     let mut task_keys = Vec::new();
-//!     for i in 0..10 {
-//!         let task_key = task_manager.try_spawn(function(i)).unwrap();
-//!         task_keys.push(task_key)
-//!     }
-//!
-//!     tokio::time::timeout(time::Duration::from_secs(5), task_manager.process()).await;
-//!
 //!     let mut task_handles = Vec::new();
-//!     for task_key in task_keys {
-//!         if let Some(handle) = task_manager.cancel_task(task_key) {
-//!             task_handles.push(handle);
-//!         } else {
-//!             println!("task-{} already finished", task_key)
-//!         }
+//!     for i in 0..5 {
+//!         let duration = i as u64;
+//!         task_handles.push(cm::spawn(outer_func(i, duration)));
 //!     }
 //!
-//!     for task_handle in task_handles {
-//!         task_handle.await;
+//!     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+//!     for (i, mut handle) in task_handles.into_iter().enumerate() {
+//!         if tokio::time::timeout_at(deadline, &mut handle).await.is_ok() {
+//!             println!("task-{} completed", i);
+//!         } else {
+//!             handle.cancel();
+//!             match handle.await {
+//!                 Result::Err(TaskError::Canceled) => println!("task-{} canceled", i),
+//!                 Result::Err(TaskError::Aborted) => println!("task-{} aborted", i),
+//!                 Result::Err(TaskError::Panicked(_)) => println!("task-{} panicked", i),
+//!                 Result::Ok(_) => unreachable!(),
+//!             }
+//!         }
 //!     }
 //! }
 //! ```
 
 pub mod macros;
 pub mod manager;
+pub mod task;
 
-pub use macros::AwaitResult::{self, Cancelled, Completed};
-pub use manager::{is_task_canceled, TaskBuilder, TaskManager};
+pub use macros::AwaitResult::{self, Canceled, Completed};
+pub use manager::{TaskBuilder, TaskManager};
+pub use task::{is_task_canceled, spawn, TaskError, TaskHandle};

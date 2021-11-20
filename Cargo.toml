@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Unlicense"
 description = "rust asynchronous task manager built on top of tokio framework"
-readme = "README.rst"
+readme = "README.md"
 
 homepage = "https://github.com/dapper91/coachman-rs"
 documentation = "https://docs.rs/coachman/"
