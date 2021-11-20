@@ -1,9 +1,10 @@
-//! Task manager utils
+//! Task manager implementation.
 
 use log;
 use tokio::macros::support::Future;
-use tokio::sync::{mpsc, watch};
-use tokio::task;
+use tokio::sync::mpsc;
+
+use crate::task::{spawn_inner, TaskError, TaskHandle};
 
 /// Task manager builder. Provides methods for task manager initialization and configuration.
 #[derive(Copy, Clone)]
@@ -39,24 +40,19 @@ impl TaskBuilder {
     }
 }
 
-tokio::task_local! {
-    pub static TASK_CANCEL_EVENT: watch::Receiver<bool>;
-}
-
-/// Returns `true` if current task is cancelled.
-pub fn is_task_canceled() -> bool {
-    *TASK_CANCEL_EVENT.with(|event| event.clone()).borrow()
-}
-
-struct TaskHandle {
-    handle: task::JoinHandle<()>,
-    cancel_event_sender: watch::Sender<bool>,
+/// Task manager error.
+#[derive(Debug)]
+pub enum TaskManagerError {
+    /// Requested task not found.
+    TaskNotFound,
+    /// Task count limit is exceeded.
+    TaskManagerIsFull,
 }
 
 /// Task manager is an asynchronous task supervisor that stores all spawned tasks, controls its states
 /// and provides an api from task management.
 pub struct TaskManager {
-    tasks: slab::Slab<TaskHandle>,
+    tasks: slab::Slab<TaskHandle<()>>,
     completion_event_queue_sender: mpsc::Sender<usize>,
     completion_event_queue_receiver: mpsc::Receiver<usize>,
     max_tasks: usize,
@@ -85,32 +81,30 @@ impl TaskManager {
         }
     }
 
+    /// Returns manager task count.
+    pub fn size(&self) -> usize {
+        self.tasks.len()
+    }
+
     /// Spawns a new asynchronous task wrapping it to be supervised by the task manager.
     /// Method can return [`None`] if task manager is full and task can not be spawned yet
     /// otherwise it returns task key that can be used to cancel this task.
     pub fn try_spawn<F>(&mut self, future: F) -> Option<usize>
     where
         F: Future<Output = ()> + Send + 'static,
-        F::Output: Send + 'static,
     {
         if self.tasks.len() == self.max_tasks {
             return None;
         }
 
-        let (cancel_event_sender, cancel_event_receiver) = watch::channel(false);
         let task_entry = self.tasks.vacant_entry();
         let task_key = task_entry.key();
 
         let completion_event_queue_sender = self.completion_event_queue_sender.clone();
-        let handle = tokio::spawn(TASK_CANCEL_EVENT.scope(cancel_event_receiver, async move {
-            future.await;
-            completion_event_queue_sender.send(task_key).await;
-        }));
-
-        task_entry.insert(TaskHandle {
-            handle,
-            cancel_event_sender,
+        let task_handle = spawn_inner(future, async move {
+            let _ = completion_event_queue_sender.send(task_key).await;
         });
+        task_entry.insert(task_handle);
 
         return Some(task_key);
     }
@@ -125,40 +119,196 @@ impl TaskManager {
                 .await
                 .expect("channel unexpectedly closed");
 
-            if self.tasks.try_remove(task_key).is_none() {
-                log::debug!("task {} not found", task_key);
+            match self.tasks.try_remove(task_key) {
+                None => log::debug!("task {} is not longer attached to the manager", task_key),
+                Some(task_handle) => {
+                    let _ = task_handle.await;
+                }
             }
         }
     }
 
-    /// Cancels all supervised tasks returning theirs handles.
-    pub fn cancel(self) -> Vec<task::JoinHandle<()>> {
-        let mut handles = Vec::new();
-
-        for (_, task_handle) in self.tasks {
-            task_handle.cancel_event_sender.send(true);
-            handles.push(task_handle.handle);
+    /// Detached a task from the manager. The task is not longer supervised by the manager.
+    pub fn detach(&mut self, task_key: usize) -> Result<TaskHandle<()>, TaskManagerError> {
+        match self.tasks.try_remove(task_key) {
+            Some(task_handle) => Ok(task_handle),
+            None => Err(TaskManagerError::TaskNotFound),
         }
+    }
 
-        return handles;
+    /// Cancels all supervised tasks.
+    pub fn cancel(mut self) {
+        for (_, task_handle) in self.tasks.iter_mut() {
+            task_handle.cancel();
+        }
+    }
+
+    /// Aborts all supervised tasks, consuming self.
+    pub fn abort(mut self) {
+        for (_, task_handle) in self.tasks.iter_mut() {
+            task_handle.abort();
+        }
+    }
+
+    /// Waits until all the tasks are completed consuming self.
+    /// If `resume_panic` argument is `true ` and any of the tasks panic
+    /// method resumes the panic on the current task.
+    pub async fn join(mut self, resume_panic: bool) {
+        for (_, task_handle) in std::mem::take(&mut self.tasks) {
+            match task_handle.await {
+                Err(TaskError::Panicked(reason)) => {
+                    if resume_panic {
+                        std::panic::resume_unwind(reason);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Cancels a particular task by task key returned by [`TaskManager::try_spawn`] method.
-    /// If the task has been completed or canceled already it returns [`None`].
-    pub fn cancel_task(&mut self, task_key: usize) -> Option<task::JoinHandle<()>> {
-        if let Some(handle) = self.tasks.try_remove(task_key) {
-            handle.cancel_event_sender.send(true);
-            Some(handle.handle)
-        } else {
-            None
+    /// If task not found (task key is wrong or task already finished)
+    /// method returns [`TaskManagerError::TaskNotFound`] error.
+    pub fn cancel_task(&mut self, task_key: usize) -> Result<(), TaskManagerError> {
+        match self.tasks.get_mut(task_key) {
+            Some(task_handle) => {
+                task_handle.cancel();
+                Ok(())
+            }
+            None => Err(TaskManagerError::TaskNotFound),
         }
     }
 
-    /// Aborts all supervised tasks.
-    pub async fn abort(self) {
-        for (_, task_handle) in self.tasks {
-            task_handle.handle.abort();
-            task_handle.handle.await;
+    /// Aborts a task by a task key.
+    /// The task is removed from the storage so that it can't be accessed anymore.
+    pub fn abort_task(&mut self, task_key: usize) -> Result<(), TaskManagerError> {
+        match self.tasks.try_remove(task_key) {
+            Some(task_handle) => {
+                task_handle.abort();
+                Ok(())
+            }
+            None => Err(TaskManagerError::TaskNotFound),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::TaskManager;
+    use crate::try_await;
+
+    #[tokio::test]
+    async fn test_task_manager_overflow() {
+        let mut task_manager = TaskManager::builder().with_max_tasks(1).build();
+
+        let task_key = task_manager.try_spawn(async {});
+        assert!(task_key.is_some());
+
+        let task_key = task_manager.try_spawn(async {});
+        assert!(task_key.is_none());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "test panic")]
+    async fn test_task_unwinding_enabled() {
+        let panic_func = async { panic!("test panic") };
+
+        let mut task_manager = TaskManager::builder().build();
+        task_manager.try_spawn(panic_func).unwrap();
+        task_manager.join(true).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_unwinding_disabled() {
+        let panic_func = async { panic!("test panic") };
+
+        let mut task_manager = TaskManager::builder().build();
+        task_manager.try_spawn(panic_func).unwrap();
+        task_manager.join(false).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_abortion() {
+        let infinite_func = async {
+            tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)).await;
+        };
+
+        let mut task_manager = TaskManager::builder().build();
+        let task_key = task_manager.try_spawn(infinite_func).unwrap();
+        task_manager.abort_task(task_key).unwrap();
+        task_manager.join(true).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_manager_abortion() {
+        let infinite_func1 = async {
+            tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)).await;
+        };
+        let infinite_func2 = async {
+            tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)).await;
+        };
+
+        let mut task_manager = TaskManager::builder().build();
+        task_manager.try_spawn(infinite_func1).unwrap();
+        task_manager.try_spawn(infinite_func2).unwrap();
+
+        task_manager.abort();
+    }
+
+    #[tokio::test]
+    async fn test_task_manager_cancellation() {
+        let cancelable_func1 = async move {
+            try_await!(tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)));
+        };
+        let cancelable_func2 = async move {
+            try_await!(tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)));
+        };
+
+        let mut task_manager = TaskManager::builder().build();
+        task_manager.try_spawn(cancelable_func1).unwrap();
+        task_manager.try_spawn(cancelable_func2).unwrap();
+
+        task_manager.cancel();
+    }
+
+    #[tokio::test]
+    async fn test_processing_loop() {
+        let mut task_manager = TaskManager::builder().build();
+        task_manager.try_spawn(async {}).unwrap();
+        task_manager.try_spawn(async {}).unwrap();
+        assert_eq!(task_manager.size(), 2);
+
+        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_millis(0), task_manager.process())
+            .await
+            .unwrap_err();
+        assert_eq!(task_manager.size(), 0);
+
+        task_manager.try_spawn(async {}).unwrap();
+        assert_eq!(task_manager.size(), 1);
+
+        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_millis(0), task_manager.process())
+            .await
+            .unwrap_err();
+        assert_eq!(task_manager.size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_task_detach() {
+        let cancelable_func = async move {
+            try_await!(tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)));
+        };
+
+        let mut task_manager = TaskManager::builder().build();
+        let task_key = task_manager.try_spawn(cancelable_func).unwrap();
+
+        let mut task_handle = task_manager.detach(task_key).unwrap();
+        assert_eq!(task_manager.size(), 0);
+
+        task_handle.cancel();
+        let _ = task_handle.await;
     }
 }
