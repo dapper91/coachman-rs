@@ -27,8 +27,8 @@ impl TaskBuilder {
         return self;
     }
 
-    /// Sets completion events queue size. Too small queue size could prevent tasks from immediate
-    /// cancellation until manager handles events from another tasks and empties a the queue.
+    /// Sets completion event queue size. Too small queue size could prevent tasks from immediate
+    /// cancellation until manager handles events from another tasks and empties the queue.
     pub fn with_completion_event_buffer_size(&mut self, completion_event_buffer_size: usize) -> &mut TaskBuilder {
         self.completion_events_buffer_size = completion_event_buffer_size;
         return self;
@@ -50,7 +50,7 @@ pub enum TaskManagerError {
 }
 
 /// Task manager is an asynchronous task supervisor that stores all spawned tasks, controls its states
-/// and provides an api from task management.
+/// and provides an api for task management.
 pub struct TaskManager {
     tasks: slab::Slab<TaskHandle<()>>,
     completion_event_queue_sender: mpsc::Sender<usize>,
@@ -128,7 +128,7 @@ impl TaskManager {
         }
     }
 
-    /// Detached a task from the manager. The task is not longer supervised by the manager.
+    /// Detaches a task from the manager. The task is not longer supervised by the manager.
     pub fn detach(&mut self, task_key: usize) -> Result<TaskHandle<()>, TaskManagerError> {
         match self.tasks.try_remove(task_key) {
             Some(task_handle) => Ok(task_handle),
@@ -152,7 +152,8 @@ impl TaskManager {
 
     /// Waits until all the tasks are completed consuming self.
     /// If `resume_panic` argument is `true ` and any of the tasks panic
-    /// method resumes the panic on the current task.
+    /// method resumes the panic on the current task. It is useful in test environment
+    /// when you want your application to be panicked if any of the spawned tasks panic.
     pub async fn join(mut self, resume_panic: bool) {
         for (_, task_handle) in std::mem::take(&mut self.tasks) {
             match task_handle.await {
