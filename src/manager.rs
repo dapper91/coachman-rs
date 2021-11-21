@@ -8,28 +8,31 @@ use crate::task::{spawn_inner, TaskError, TaskHandle};
 
 /// Task manager builder. Provides methods for task manager initialization and configuration.
 #[derive(Copy, Clone)]
-pub struct TaskBuilder {
+pub struct TaskManagerBuilder {
     max_tasks: usize,
     capacity: usize,
     completion_events_buffer_size: usize,
 }
 
-impl TaskBuilder {
+impl TaskManagerBuilder {
     /// Sets max task count the manager will be handling
-    pub fn with_max_tasks(&mut self, max_tasks: usize) -> &mut TaskBuilder {
+    pub fn with_max_tasks(&mut self, max_tasks: usize) -> &mut TaskManagerBuilder {
         self.max_tasks = max_tasks;
         return self;
     }
 
     /// Sets slab task storage initial capacity. The right capacity choice prevents extra memory allocation.
-    pub fn with_capacity(&mut self, capacity: usize) -> &mut TaskBuilder {
+    pub fn with_capacity(&mut self, capacity: usize) -> &mut TaskManagerBuilder {
         self.capacity = capacity;
         return self;
     }
 
     /// Sets completion event queue size. Too small queue size could prevent tasks from immediate
     /// cancellation until manager handles events from another tasks and empties the queue.
-    pub fn with_completion_event_buffer_size(&mut self, completion_event_buffer_size: usize) -> &mut TaskBuilder {
+    pub fn with_completion_event_buffer_size(
+        &mut self,
+        completion_event_buffer_size: usize,
+    ) -> &mut TaskManagerBuilder {
         self.completion_events_buffer_size = completion_event_buffer_size;
         return self;
     }
@@ -60,8 +63,8 @@ pub struct TaskManager {
 
 impl TaskManager {
     /// Returns a task manager builder.
-    pub fn builder() -> TaskBuilder {
-        TaskBuilder {
+    pub fn builder() -> TaskManagerBuilder {
+        TaskManagerBuilder {
             max_tasks: 1024,
             capacity: 32,
             completion_events_buffer_size: 256,

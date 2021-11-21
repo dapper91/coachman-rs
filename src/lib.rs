@@ -60,5 +60,5 @@ pub mod manager;
 pub mod task;
 
 pub use macros::AwaitResult::{self, Canceled, Completed};
-pub use manager::{TaskBuilder, TaskManager};
+pub use manager::{TaskManager, TaskManagerBuilder};
 pub use task::{is_task_canceled, spawn, TaskError, TaskHandle};
