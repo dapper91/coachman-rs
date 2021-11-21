@@ -147,7 +147,7 @@ impl<T> TaskHandle<T> {
 
     /// Cancels the task associated with the handle. Whether the task handles cancellation
     /// event (using [`crate::try_await`] macro) or not depends on task itself. If the task
-    /// doesn't implement cancellation handling it continue execution until it finishes or being aborted.
+    /// doesn't implement cancellation handling it continue to execute until it finishes or being aborted.
     pub fn cancel(&mut self) {
         let _ = self.cancel_event_sender.send(true);
         self.canceled = true;
@@ -159,7 +159,7 @@ impl<T> Future for TaskHandle<T> {
 
     /// Polls for the task completion. The task could be completed successfully returning [`Ok`]
     /// or exited with an [`Err`]<[`TaskError`]> error. In the last case the
-    /// actual reason (cancellation, abortion or panicking) could be fetched from it.
+    /// actual reason (cancellation, abortion or panicking) could be fetched from the error.
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.handle).poll(cx) {
             Poll::Pending => Poll::Pending,
