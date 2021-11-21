@@ -29,7 +29,7 @@ async fn main() {
         task_keys.push(task_key)
     }
 
-    tokio::time::timeout(time::Duration::from_secs(5), task_manager.process()).await;
+    tokio::time::timeout(time::Duration::from_secs(5), task_manager.process(false)).await;
 
     for task_key in task_keys {
         if task_manager.cancel_task(task_key).is_ok() {
