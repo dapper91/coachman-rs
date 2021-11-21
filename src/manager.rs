@@ -114,7 +114,10 @@ impl TaskManager {
 
     /// Runs manager processing loop handling task events.
     /// Method is cancellation safe and can be used in `tokio::select!` macro.
-    pub async fn process(&mut self) {
+    /// If `resume_panic` argument is `true ` and any of the tasks panic
+    /// method resumes the panic on the current task. It is useful in test environment
+    /// when you want your application to be panicked if any of the spawned tasks panic.
+    pub async fn process(&mut self, resume_panic: bool) {
         loop {
             let task_key = self
                 .completion_event_queue_receiver
@@ -124,9 +127,14 @@ impl TaskManager {
 
             match self.tasks.try_remove(task_key) {
                 None => log::debug!("task {} is not longer attached to the manager", task_key),
-                Some(task_handle) => {
-                    let _ = task_handle.await;
-                }
+                Some(task_handle) => match task_handle.await {
+                    Err(TaskError::Panicked(reason)) => {
+                        if resume_panic {
+                            std::panic::resume_unwind(reason);
+                        }
+                    }
+                    _ => {}
+                },
             }
         }
     }
@@ -285,7 +293,7 @@ mod tests {
         assert_eq!(task_manager.size(), 2);
 
         tokio::task::yield_now().await;
-        tokio::time::timeout(Duration::from_millis(0), task_manager.process())
+        tokio::time::timeout(Duration::from_millis(0), task_manager.process(true))
             .await
             .unwrap_err();
         assert_eq!(task_manager.size(), 0);
@@ -294,7 +302,7 @@ mod tests {
         assert_eq!(task_manager.size(), 1);
 
         tokio::task::yield_now().await;
-        tokio::time::timeout(Duration::from_millis(0), task_manager.process())
+        tokio::time::timeout(Duration::from_millis(0), task_manager.process(true))
             .await
             .unwrap_err();
         assert_eq!(task_manager.size(), 0);
